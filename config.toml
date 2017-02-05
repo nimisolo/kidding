@@ -1,0 +1,6 @@
+languageCode = "en-us"
+title = "Are you kidding?"
+baseurl = "http://example.org/"
+
+[Params]
+    Author = "Longp(Mike)"
