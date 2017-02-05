@@ -2,6 +2,7 @@
 date = "2017-02-05T16:45:06+08:00"
 title = "ARM host/guest使用哪种timer"
 draft = false
+tags = ["kernel", "虚拟化", "ARM"]
 
 +++
 
