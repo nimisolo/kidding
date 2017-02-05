@@ -1,7 +1,7 @@
 languageCode = "zh-cn"
 title = "Are you kidding?"
 baseurl = "https://nimisolo.github.io/"
-canonifyurls = true
+hasCJKLanguage = true
 
 [Params]
     Author = "Longp(Mike)"
