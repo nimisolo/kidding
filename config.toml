@@ -1,6 +1,6 @@
 languageCode = "en-us"
 title = "Are you kidding?"
-baseurl = "http://example.org/"
+baseurl = "https://nimisolo.github.io/"
 
 [Params]
     Author = "Longp(Mike)"
