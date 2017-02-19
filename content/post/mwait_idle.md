@@ -39,7 +39,7 @@ void kvm_vcpu_block(struct kvm_vcpu *vcpu)
 
 ### CPU Cstates
 Cstates是ACPI规范中引入的，具体的可以看acpi spec，下面内容摘自[Haswell芯光大道之六：C-States十种状态解析](http://www.expreview.com/25426.html)
-![](https://nimisolo.github.io/post/intel-power-state.jpg)
+![](intel-power-state.jpg)
 
 ### MONITOR/MWAIT指令
 
