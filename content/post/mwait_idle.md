@@ -80,13 +80,26 @@ S-States中的S0指非睡眠状态，包含了系统正常运作状态以及待�
 **C10**：关闭VR模块。（不确定）
 
 ### MONITOR/MWAIT指令
+**MONITOR指令**能够监控一个Linear Address（监控的范围通常是cache line size），当向该地址写入操作时会被检测到。The MONITOR instruction arms the address monitoring hardware using the address specified in EAX. The address range that the monitoring hardware will check for store operations can be determined by the CPUID instruction. The monitoring hardware will detect stores to an address within the address range and triggers the monitor hardware when the write is detected. The state of the monitor hardware is used by the MWAIT instruction.
+
+**MWAIT指令** provides hints to allow the processor to enter an implementation-dependent optimized state. There are two principal targeted usages: address-range monitor and advanced power management.
+A store to the address range armed by the MONITOR instruction, an interrupt, an NMI or SMI, a debug exception, a machine check exception, the BINIT# signal, the INIT# signal, or the RESET# signal will exit the implementation-dependent-optimized state.
+In addition, an external interrupt causes the processor to exit the implementation-dependent-optimized state either (1) if the interrupt would be delivered to software (e.g., as it would be if HLT had been executed instead of MWAIT); or (2) if ECX[0] = 1. Software can execute MWAIT with ECX[0] = 1 only if CPUID.05H:ECX[bit 1] = 1. (Implementation-specific conditions may result in an interrupt causing the processor to exit the implementation-dependent-optimized state even if interrupts are masked and ECX[0] = 0.)
+<font color=red> 注意： </font>上面提到了MWAIT的牛逼之处（相比HLT）：
+
++ 可以进入指定的C-state
+
++ 唤醒事件中包括了向MONITOR地址进行写入操作
+
++ 即使interrupt处于disabled状态，也有可能（看CPU是否支持）可以被interrupt唤醒
+
 
 #### 会不会有安全问题
 <font color=red>**问题：**</font>虚拟化下，如果guest kernel中执行了MONITOR gva指令，此时会不会影响到host中正处于mwait状态的cpu？例如：无论是某个vcpu STORE了该gva、或者某个pcpu STORE了某hva（而此hva的数值与该gva相等），都将引起mwait BROKEN?
 
 <font color=blue>**解决：**</font>
 
-+ intel SDM vol3 26.3.3 / 27.5.6 说，VMentry/VMexit时会将可能有影响的所有“address-range monitoring”清除。（题外话：什么叫“可能有影响”？**[a]**我觉得都是“可能有影响的”，因为该address-range是个virtual address，对于64位host+64位guest的线性地址空间大小是一样的，硬件上无法区分，所以应该是都会清除。**[b]**但是这样的话又不对了，假如pcpu监控了hva1，然后它进入了guest，这时需要将hva1清除，当VMexit后并没有提到恢复对hva1的监控，那么此pcpu上后续STORE hva1不就不能被监控了吗？**[c]**除非有种可能，address-range由至少二元组确定，即virtual address + cpu mode，但是这样的话SDM何不直接描述为“guest或non-root的address-range清除”即可？<font color=red>哎...暂时不懂</font>）
++ intel SDM vol3 26.3.3 / 27.5.6 说，VMentry/VMexit时会将可能有影响的（或正在生效的?? may be in effect, 如何翻译更好??）所有“address-range monitoring”清除。（题外话：什么叫“可能有影响”？**[a]**我觉得都是“可能有影响的”，因为该address-range是个virtual address，对于64位host+64位guest的线性地址空间大小是一样的，硬件上无法区分，所以应该是都会清除。**[b]**但是这样的话又不对了，假如pcpu监控了hva1，然后它进入了guest，这时需要将hva1清除，当VMexit后并没有提到恢复对hva1的监控，那么此pcpu上后续STORE hva1不就不能被监控了吗？**[c]**除非有种可能，address-range由至少二元组确定，即virtual address + cpu mode，但是这样的话SDM何不直接描述为“guest或non-root的address-range清除”即可？<font color=red>哎...暂时不懂</font>）
 
 + intel SDM vol3 25.1.3 说，如果VM-execution control的“MONITOR exiting”为1，则MONITOR指令会导致VMexit。
 
