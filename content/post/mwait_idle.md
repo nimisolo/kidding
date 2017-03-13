@@ -85,6 +85,7 @@ S-States中的S0指非睡眠状态，包含了系统正常运作状态以及待�
 **MWAIT指令** provides hints to allow the processor to enter an implementation-dependent optimized state. There are two principal targeted usages: address-range monitor and advanced power management.
 A store to the address range armed by the MONITOR instruction, an interrupt, an NMI or SMI, a debug exception, a machine check exception, the BINIT# signal, the INIT# signal, or the RESET# signal will exit the implementation-dependent-optimized state.
 In addition, an external interrupt causes the processor to exit the implementation-dependent-optimized state either (1) if the interrupt would be delivered to software (e.g., as it would be if HLT had been executed instead of MWAIT); or (2) if ECX[0] = 1. Software can execute MWAIT with ECX[0] = 1 only if CPUID.05H:ECX[bit 1] = 1. (Implementation-specific conditions may result in an interrupt causing the processor to exit the implementation-dependent-optimized state even if interrupts are masked and ECX[0] = 0.)
+
 <font color=red> 注意： </font>上面提到了MWAIT的牛逼之处（相比HLT）：
 
 + 可以进入指定的C-state
@@ -108,6 +109,153 @@ In addition, an external interrupt causes the processor to exit the implementati
 
 ### Linux idle进程
 
-#### 执行框架分析
+idle进程的执行体是`do_idle`函数，此篇中我们关注的片段如下：
+```
+void cpu_startup_entry(enum cpuhp_state state)
+{
+	......
+	while (1)
+		do_idle();
+}
 
-#### intel_idle分析
+/*
+ * Generic idle loop implementation
+ *
+ * Called with polling cleared.
+ */
+static void do_idle(void)
+{
+	......
+
+	while (!need_resched()) {
+		......
+		if (cpu_idle_force_poll || tick_check_broadcast_expired())
+			cpu_idle_poll();
+		else
+			cpuidle_idle_call();
+		......
+	}
+
+	......
+	sched_ttwu_pending(); /* 唤醒其他需要唤醒的任务 */
+	schedule_preempt_disabled(); /* 通过schedule()主动切换到其他runnable任务 */
+}
+```
+
+如果配置了idle=poll，则会走`cpu_idle_poll`函数，它实际上就是在那里一直轮询检查`当前是否需要进行任务调度`。
+没配置的话则会走`cpuidle_idle_call`函数：
+
+```
+
+/**
+ * cpuidle_idle_call - the main idle function
+ *
+ * NOTE: no locks or semaphores should be used here
+ *
+ * On archs that support TIF_POLLING_NRFLAG, is called with polling
+ * set, and it returns with polling set.  If it ever stops polling, it
+ * must clear the polling bit.
+ */
+static void cpuidle_idle_call(void)
+{
+	struct cpuidle_device *dev = cpuidle_get_device();
+	struct cpuidle_driver *drv = cpuidle_get_cpu_driver(dev);
+	int next_state, entered_state;
+
+	......
+
+	if (cpuidle_not_available(drv, dev)) {
+		default_idle_call();
+		goto exit_idle;
+	}
+
+	/*
+	 * Suspend-to-idle ("freeze") is a system state in which all user space
+	 * has been frozen, all I/O devices have been suspended and the only
+	 * activity happens here and in iterrupts (if any).  In that case bypass
+	 * the cpuidle governor and go stratight for the deepest idle state
+	 * available.  Possibly also suspend the local tick and the entire
+	 * timekeeping to prevent timer interrupts from kicking us out of idle
+	 * until a proper wakeup interrupt happens.
+	 */
+
+	if (idle_should_freeze() || dev->use_deepest_state) {
+		if (idle_should_freeze()) {
+			entered_state = cpuidle_enter_freeze(drv, dev);
+			if (entered_state > 0) {
+				local_irq_enable();
+				goto exit_idle;
+			}
+		}
+
+		next_state = cpuidle_find_deepest_state(drv, dev);
+		call_cpuidle(drv, dev, next_state);
+	} else {
+		/*
+		 * Ask the cpuidle framework to choose a convenient idle state.
+		 */
+		next_state = cpuidle_select(drv, dev);
+		entered_state = call_cpuidle(drv, dev, next_state);
+		/*
+		 * Give the governor an opportunity to reflect on the outcome
+		 */
+		cpuidle_reflect(dev, entered_state);
+	}
+	......
+}
+```
+
+如果系统中没有高级电源管理模块（例如acpi_driver或者intel_driver），则会调用`default_idle_call`函数，对于X86来说它会执行HLT指令。
+如果有的话，则会计算出一个将要进入的C-state，然后通过`call_cpuidle`函数进入。
+
+```
+
+static int call_cpuidle(struct cpuidle_driver *drv, struct cpuidle_device *dev,
+		      int next_state)
+{
+	......
+
+	/*
+	 * Enter the idle state previously returned by the governor decision.
+	 * This function will block until an interrupt occurs and will take
+	 * care of re-enabling the local interrupts
+	 */
+	return cpuidle_enter(drv, dev, next_state);
+}
+```
+
+这里`cpuidle_enter` --> `cpuidle_enter_state` --> `entered_state = target_state->enter(dev, drv, index);`，最后通过`->enter`回调函数进入相应C-state。
+对于intel_idle驱动来说，这个回调函数是`intel_idle`函数，它最终会调用`mwait_idle_with_hints`函数来执行MWAIT指令。
+
+```
+/*
+ * This uses new MONITOR/MWAIT instructions on P4 processors with PNI,
+ * which can obviate IPI to trigger checking of need_resched.
+ * We execute MONITOR against need_resched and enter optimized wait state
+ * through MWAIT. Whenever someone changes need_resched, we would be woken
+ * up from MWAIT (without an IPI).
+ *
+ * New with Core Duo processors, MWAIT can take some hints based on CPU
+ * capability.
+ */
+static inline void mwait_idle_with_hints(unsigned long eax, unsigned long ecx)
+{
+	if (static_cpu_has_bug(X86_BUG_MONITOR) || !current_set_polling_and_test()) {
+		if (static_cpu_has_bug(X86_BUG_CLFLUSH_MONITOR)) {
+			mb();
+			clflush((void *)&current_thread_info()->flags);
+			mb();
+		}
+
+		__monitor((void *)&current_thread_info()->flags, 0, 0);
+		if (!need_resched())
+			__mwait(eax, ecx);
+	}
+	current_clr_polling();
+}
+```
+
+首先会通过MONITOR指令监控idle进程的flags，然后通过MWAIT进入相应C-state。
+
+<font color=red>这里监控flags的原因很简单：当其他cpu唤醒了此cpu上某个任务的时候，（可参见`ttwu_queue`函数）要么通过RES IPI、要么其他cpu直接将该任务放在此cpu的运行队列上，前者因为是个IPI中断，肯定会第一时间唤醒此cpu；对于后者，过程中有一步会将idle进程（如果此cpu当前运行的是idle）的flags置上NEED_RESCHED标记，由于此cpuMONITOR了flags，所以此cpu也能第一时刻就唤醒。</font>
+
