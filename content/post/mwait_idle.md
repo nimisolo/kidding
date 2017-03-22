@@ -38,7 +38,6 @@ void kvm_vcpu_block(struct kvm_vcpu *vcpu)
 
 <font color=red>**[更新]**突然想到一个此处换做HLT/MWAIT的一个优势：在开启硬件超线程的host上，如果同一core上的一个硬件线程的vcpu1进行halt_poll_ns而另外个硬件线程上的vcpu2在运行业务，那么这种做法或许比社区的好，因为vcpu1 exit执行HLT/MWAIT指令后，该core的硬件资源此时能够完全给另一个硬件线程独占，该线程性能会因资源独占而变好。</font>
 
-
 ### CPU Cstates
 Cstates是ACPI规范中引入的，具体的可以看acpi spec，下面内容摘自[Haswell芯光大道之六：C-States十种状态解析](http://www.expreview.com/25426.html)
 
@@ -96,16 +95,65 @@ In addition, an external interrupt causes the processor to exit the implementati
 
 
 #### 会不会有安全问题
-<font color=red>**问题：**</font>虚拟化下，如果guest kernel中执行了MONITOR gva指令，此时会不会影响到host中正处于mwait状态的cpu？例如：无论是某个vcpu STORE了该gva、或者某个pcpu STORE了某hva（而此hva的数值与该gva相等），都将引起mwait BROKEN?
+
+<font color=red>**问题一：**</font>虚拟化下，如果guest kernel中执行了MONITOR gva指令，此时会不会影响到host中正处于mwait状态的cpu？例如：无论是某个vcpu STORE了该gva、或者某个pcpu STORE了某hva（而此hva的数值与该gva相等），都将引起mwait BROKEN?
 
 <font color=blue>**解决：**</font>
 
 + intel SDM vol3 26.3.3 / 27.5.6 说，VMentry/VMexit时会将可能有影响的（或正在生效的?? may be in effect, 如何翻译更好??）所有“address-range monitoring”清除。（题外话：什么叫“可能有影响”？**[a]**我觉得都是“可能有影响的”，因为该address-range是个virtual address，对于64位host+64位guest的线性地址空间大小是一样的，硬件上无法区分，所以应该是都会清除。**[b]**但是这样的话又不对了，假如pcpu监控了hva1，然后它进入了guest，这时需要将hva1清除，当VMexit后并没有提到恢复对hva1的监控，那么此pcpu上后续STORE hva1不就不能被监控了吗？**[c]**除非有种可能，address-range由至少二元组确定，即virtual address + cpu mode，但是这样的话SDM何不直接描述为“guest或non-root的address-range清除”即可？<font color=red>哎...暂时不懂</font>）
 
+<font color=red>**[2017/03/22更新]** [和KVM co-maintainer Radim做了些讨论](http://marc.info/?l=kvm&m=149006091218214&w=4)，最终认为这是没有问题的，Intel spec vol2中对MWAIT有这样的描述：
+
+If the preceding MONITOR instruction did not successfully arm an address range or if the MONITOR instruction has not been executed prior to executing MWAIT, then the processor will not enter the implementation-dependent-optimized state. Execution will resume at the instruction following the MWAIT.
+
+也就是说，如果guest在monitor/mwait之间发生了vmexit，则monitor address-range会被clear掉，但再次vmentry时MWAIT行为和NOP一样（原因或许是：此时MWAIT执行时发现monitor address-range不存在，就当做" did not successfully arm an address range"，所以"resume at the instruction following the MWAIT"）
+
+讨论相关记录：
+```
+>> 2) According to the "Intel sdm vol3 ch26.3.3 & ch27.5.6", I think MONITOR in
+>> guest mode can't work as perfect as in host sometimes.
+>> For example, a vcpu MONITOR a address and then MWAIT, if a external-intr(suppose
+>> this intr won't cause to inject any virtual events ) cause VMEXIT, the monitor
+>> address will be cleaned, so the MWAIT won't be waken up by a store operation to
+>> the monitored address any more.
+> 
+> It's not as perfect, but should not cause a bug (well, there is a
+> discussion with suspicious MWAIT behavior :]).
+> MWAIT on all Intels I tested would just behave as a nop if exit happened
+> between MONITOR and MWAIT, like it does if you skip the MONITOR (MWAIT
+> instruction desciption):
+> 
+>   If the preceding MONITOR instruction did not successfully arm an
+>   address range or if the MONITOR instruction has not been executed
+>   prior to executing MWAIT, then the processor will not enter the
+>   implementation-dependent-optimized state. Execution will resume at the
+>   instruction following the MWAIT.
+> 
+```
+</font>
+
 + intel SDM vol3 25.1.3 说，如果VM-execution control的“MONITOR exiting”为1，则MONITOR指令会导致VMexit。
 
 在KVM中，在`setup_vmcs_config`中“MONITOR exiting”是会强制为1的，所以vcpu只要执行该指令就会引起VMexit，退出处理`handle_monitor`中直接跳过该指令、把它当做NOP来处理。
 
+<font color=red>**[2017/03/22更新]问题二：**</font> Intel sdm vol3 ch25.3说在某些情况下，guest可正常执行MWAIT指令，正常包括进入各种deeper C-state？如果包括的话那么这就有蛋疼的事儿了：某些deeper sleep会clear缓存（L1、L2、L3都有可能），而vmx又没有能够限制guest max-cstates的方法，vcpu可以影响到其他pcpu cache，这太可怕了....
+
+这个观点Radim很是认同，但我还需要做个实验，确定guest能够进入各种deeper sleep。
+
+讨论相关记录：
+```
+>> 1) As "Intel sdm vol3 ch25.3" says, MWAIT operates normally (I think includes
+>> entering deeper sleep) under certain conditions.
+>> Some deeper sleep modes(such as C4E/C6/C7) will clear the L1/L2/L3 cache.
+>> This is insecurity if we don't take other protective measures(such as limit the
+>> guest's max-cstate, it's fortunately that power subsystem isn't supported by
+>> QEMU, but we should be careful for some special-purpose in case). While HLT in
+>> guest mode can't cause hardware into sleep.
+> 
+> Good point.  I'm not aware of any VMX capabilities to prevent deeper
+> C-states, so we'd always hope that guests obey provided information.
+> 
+```
 
 ### Linux idle进程
 
