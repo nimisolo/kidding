@@ -118,7 +118,7 @@ int set_cpus_allowed_ptr(struct task_struct *p, const struct cpumask *new_mask)
 	return __set_cpus_allowed_ptr(p, new_mask, false);
 }
 ```
-可以看到传入的check=false，即即使带PF_NO_SETAFFINITY标记也要修改，所以，<font color=red>rescuer线程在运行过程中会动态调整自己的亲和性，除此之外内核不会主动调整其他worker线程的亲和性</font>。
+可以看到传入的check=false，意味着即使带PF_NO_SETAFFINITY标记也要修改，所以，<font color=red>rescuer线程在运行过程中会动态调整自己的亲和性，除此之外内核不会主动调整其他worker线程的亲和性</font>。
 
 用户态程序（例如taskset）可通过`sched_setaffinity`来改变线程的亲和性，但是它会首先判断线程是否有PF_NO_SETAFFINITY标记，有的话则不能修改亲和性，
 ```
@@ -137,12 +137,35 @@ long sched_setaffinity(pid_t pid, const struct cpumask *in_mask)
 
 #### worker何时唤醒/休眠
 
-#### rescuer作用及运行时间
+首先说说“休眠”，也就是让worker进入`WORKER_IDLE`状态。进入休眠状态的函数是`worker_enter_idle`，根据其被调用地方，我们可以得到如下结论：
 
-#### timers的作用
++ worker刚创建完成后会进入休眠状态，因此此时在`worker_thread`中会进入sleep分支，然后进入休眠：
+
+```
+static int worker_thread(void *__worker)
+{
+	......
+recheck:
+	/* no more worker necessary? */
+	if (!need_more_worker(pool))
+		goto sleep;
+	......
+sleep:
+	worker_enter_idle(worker);
+	__set_current_state(TASK_INTERRUPTIBLE);
+	spin_unlock_irq(&pool->lock);
+	schedule();
+	goto woke_up;
+}
+```
+
+
+#### rescuer作用及运行时间
 
 #### worker何种情况下会扩建
 
 #### worker何时销毁
 
-#### work太多了能做负载均衡吗
+#### work太多了如何并发处理
+
+#### timers的作用

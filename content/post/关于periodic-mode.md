@@ -54,7 +54,7 @@ static void hrtimer_switch_to_hres(void)
 	......
 }
 ```
-当`tick_init_highres`返回false是，才会设置`hres_active`为1。看名字，该函数的作用是初始化高精度定时器（即oneshot mode），深入该函数，可以发现：如果成功切换成oneshot，则会返回0。
+当`tick_init_highres`返回false时，才会设置`hres_active`为1。看名字，该函数的作用是初始化高精度定时器（即oneshot mode），深入该函数，可以发现：如果成功切换成oneshot，则会返回0。
 好，到这里其实我们已经弄清楚了：
 <font color=red>
 + 高精度highres其实是指onshot-mode。
