@@ -59,7 +59,7 @@ kernel_init
 + 调用 dmar_init_reserved_ranges 将MSI地址区间及所有pci dev的MMIO区间加入reserved_iova_list，这些区间不能被remapping（前者vt-d ch3.13有说明；<font color=red>后者是为何？近期看到社区有推使能pcie p2p支持的patch([Enabling peer to peer device transactions for PCIe devices](https://lists.01.org/pipermail/linux-nvdimm/2017-January/008395.html))，难道是软件还不支持？</font>）
 + 调用 init_no_remapping_devices ：绝大多数gfx drivers不会调用standard PCI DMA APIs来分配DMA buffers，这与IOMMU有冲突。因此如果一个DMA remapping hardware unit中如果只有gdx devices，则根据cmdline配置来决定iommu是否需要将它们bypass掉。[原始patch](https://lkml.org/lkml/2007/4/24/226)
 + init_dmars 对 intel_iommu 做详细的初始化设置（具体见下文分析）
-+ 调用 bus_set_iommu 设置pci bus的iommu_ops钩子为intel_iommu_ops，并注册了一个bus notifier —— iommu_bus_notifier
++ 调用 bus_set_iommu 设置pci bus的iommu_ops钩子为<font color=red>intel_iommu_ops</font>，并注册了一个bus notifier —— iommu_bus_notifier
 
 <br/>
 
